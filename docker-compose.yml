@@ -9,8 +9,8 @@ services:
     read_only: true
     tmpfs:
       - /tmp
-      - /var/cache/nginx
-      - /var/run
+      - /var/cache/nginx:uid=1001,gid=1001
+      - /var/run:uid=1001,gid=1001
     security_opt:
       - no-new-privileges:true
     cap_drop:
