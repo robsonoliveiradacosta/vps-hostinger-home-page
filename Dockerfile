@@ -1,0 +1,15 @@
+FROM nginx:1.27-alpine
+
+RUN addgroup -g 1001 -S appgroup && \
+    adduser -u 1001 -S appuser -G appgroup && \
+    chown -R appuser:appgroup /var/cache/nginx /var/log/nginx /etc/nginx/conf.d && \
+    touch /var/run/nginx.pid && chown appuser:appgroup /var/run/nginx.pid
+
+COPY nginx.conf /etc/nginx/nginx.conf
+
+USER appuser
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
+  CMD wget -qO /dev/null http://localhost:8080/ || exit 1
