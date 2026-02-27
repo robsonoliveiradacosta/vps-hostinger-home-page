@@ -37,8 +37,8 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
             docker pull robsondeveloper/home-page:latest
-            mkdir -p /opt/home-page
-            cat > /opt/home-page/docker-compose.yml << 'EOF'
+            mkdir -p /home/${{ secrets.VPS_USER }}/home-page
+            cat > /home/${{ secrets.VPS_USER }}/home-page/docker-compose.yml << 'EOF'
             services:
               nginx:
                 image: robsondeveloper/home-page:latest
@@ -55,4 +55,4 @@ jobs:
                 cap_drop:
                   - ALL
             EOF
-            cd /opt/home-page && docker compose up -d
+            cd /home/${{ secrets.VPS_USER }}/home-page && docker compose up -d
