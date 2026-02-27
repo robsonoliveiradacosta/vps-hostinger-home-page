@@ -39,5 +39,5 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          source: Dockefile, docker-compose.yaml, nginx.conf, homepage.html
+          source: "Dockefile, docker-compose.yaml, nginx.conf, homepage.html"
           target: /home/${{ secrets.VPS_USER }}/home-page
