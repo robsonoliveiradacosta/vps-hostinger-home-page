@@ -13,6 +13,9 @@ RUN addgroup -g 1001 -S appgroup && \
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY homepage.html /usr/share/nginx/html/homepage.html
 
+RUN chown appuser:appgroup /etc/nginx/nginx.conf /usr/share/nginx/html/homepage.html && \
+    chmod 644 /etc/nginx/nginx.conf /usr/share/nginx/html/homepage.html
+
 USER appuser
 
 EXPOSE 8080
