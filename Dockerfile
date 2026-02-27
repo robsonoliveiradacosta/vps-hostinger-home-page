@@ -19,6 +19,7 @@ RUN chown appuser:appgroup /etc/nginx/nginx.conf /usr/share/nginx/html/homepage.
 USER appuser
 
 EXPOSE 8080
+EXPOSE 8443
 
 HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
   CMD wget -qO /dev/null http://localhost:8080/ || exit 1

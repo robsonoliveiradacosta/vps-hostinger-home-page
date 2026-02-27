@@ -4,6 +4,10 @@ services:
     container_name: home_page_nginx
     ports:
       - "80:8080"
+      - "443:8443"
+    volumes:
+      - /etc/home-page-certs/fullchain.pem:/etc/nginx/certs/fullchain.pem:ro
+      - /etc/home-page-certs/privkey.pem:/etc/nginx/certs/privkey.pem:ro
     restart: unless-stopped
     mem_limit: 128m
     memswap_limit: 128m
