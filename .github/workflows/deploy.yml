@@ -65,8 +65,6 @@ jobs:
           script: |
             set -e
             cd /home/${{ secrets.VPS_USER }}/home-page
-            export HOME_PAGE_IMAGE=robsondeveloper/home-page:${{ github.sha }}
-
-            docker compose pull
-            docker compose up -d --remove-orphans
-            docker image prune -f
+            IMAGE=robsondeveloper/home-page:${{ github.sha }}
+            HOME_PAGE_IMAGE=$IMAGE docker compose pull
+            HOME_PAGE_IMAGE=$IMAGE docker compose up -d --remove-orphans
