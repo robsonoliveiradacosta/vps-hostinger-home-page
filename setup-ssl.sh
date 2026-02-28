@@ -114,7 +114,7 @@ step "Passo 2/3 — Instalando certificados"
 cp "$CERT_FILE" "$CERTS_DIR/fullchain.pem"
 cp "$KEY_FILE"  "$CERTS_DIR/privkey.pem"
 chmod 644 "$CERTS_DIR/fullchain.pem"
-chmod 640 "$CERTS_DIR/privkey.pem"
+chmod 644 "$CERTS_DIR/privkey.pem"
 log "Certificados instalados em $CERTS_DIR"
 ls -la "$CERTS_DIR/"
 
