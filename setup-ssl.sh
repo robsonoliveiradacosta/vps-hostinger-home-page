@@ -1,13 +1,22 @@
 #!/bin/bash
-# Setup SSL/TLS com Let's Encrypt para o container home-page-nginx
-# Executar no VPS com: sudo ./setup-ssl.sh -d example.com -e admin@example.com
+# Instala o Origin Certificate do Cloudflare no container home-page-nginx
+#
+# Pré-requisitos (passos manuais no Cloudflare):
+#   1. DNS → Records: ativar proxy (nuvem laranja) em antaresprime.com e www
+#   2. SSL/TLS → Overview: modo "Full (Strict)"
+#   3. SSL/TLS → Origin Server → Create Certificate → copiar os dois arquivos
+#   4. Enviar os arquivos para o VPS:
+#        scp antaresprime.com.pem robson@VPS:~/
+#        scp antaresprime.com.key robson@VPS:~/
+#
+# Uso:
+#   ./setup-ssl.sh -c ~/antaresprime.com.pem -k ~/antaresprime.com.key [-p CAMINHO_PROJETO]
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
 # Constantes
 # ---------------------------------------------------------------------------
-CERTS_DIR="/etc/home-page-certs"
-HOOK_PATH="/etc/letsencrypt/renewal-hooks/deploy/home-page.sh"
+CERTS_DIR="/home/${USER}/home-page-certs"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -24,12 +33,11 @@ err()  { echo -e "${RED}[✘] ERRO: $1${NC}"; exit 1; }
 step() { echo -e "\n${BOLD}── $1${NC}"; }
 
 usage() {
-    echo "Uso: sudo $0 -d DOMÍNIO -e EMAIL [-p CAMINHO_PROJETO] [-w]"
+    echo "Uso: $0 -c CERT -k CHAVE [-p CAMINHO_PROJETO]"
     echo ""
-    echo "  -d DOMÍNIO         Domínio principal (ex: example.com)"
-    echo "  -e EMAIL           Email para notificações do Let's Encrypt"
+    echo "  -c CERT            Caminho do arquivo de certificado (origin.pem)"
+    echo "  -k CHAVE           Caminho do arquivo de chave privada (origin.key)"
     echo "  -p CAMINHO_PROJETO Caminho do projeto no VPS (padrão: diretório atual)"
-    echo "  -w                 Incluir www.DOMÍNIO no certificado (padrão: sim)"
     echo "  -h                 Exibir esta mensagem"
     exit 1
 }
@@ -37,132 +45,92 @@ usage() {
 # ---------------------------------------------------------------------------
 # Parse de argumentos
 # ---------------------------------------------------------------------------
-DOMAIN=""
-EMAIL=""
+CERT_FILE=""
+KEY_FILE=""
 PROJECT_PATH="$(pwd)"
-INCLUDE_WWW=true
 
-while getopts "d:e:p:wh" opt; do
+while getopts "c:k:p:h" opt; do
     case $opt in
-        d) DOMAIN="$OPTARG" ;;
-        e) EMAIL="$OPTARG" ;;
+        c) CERT_FILE="$OPTARG" ;;
+        k) KEY_FILE="$OPTARG" ;;
         p) PROJECT_PATH="$OPTARG" ;;
-        w) INCLUDE_WWW=false ;;
         h) usage ;;
         *) usage ;;
     esac
 done
 
-[[ -z "$DOMAIN" ]] && { echo -e "${RED}Erro: -d DOMÍNIO é obrigatório.${NC}"; usage; }
-[[ -z "$EMAIL" ]] && { echo -e "${RED}Erro: -e EMAIL é obrigatório.${NC}"; usage; }
+[[ -z "$CERT_FILE" ]] && { echo -e "${RED}Erro: -c CERT é obrigatório.${NC}"; usage; }
+[[ -z "$KEY_FILE"  ]] && { echo -e "${RED}Erro: -k CHAVE é obrigatório.${NC}"; usage; }
 
 # ---------------------------------------------------------------------------
 # Verificações de pré-requisitos
 # ---------------------------------------------------------------------------
 step "Verificando pré-requisitos"
 
-[[ $EUID -ne 0 ]] && err "Execute este script como root: sudo $0 ..."
+[[ $EUID -eq 0 ]] && err "Não execute como root. Use: ./setup-ssl.sh ..."
 
-command -v docker &>/dev/null  || err "docker não está instalado."
-command -v dig    &>/dev/null  || apt-get install -y -qq dnsutils > /dev/null
+[[ -f "$CERT_FILE" ]] || err "Arquivo de certificado não encontrado: $CERT_FILE"
+[[ -f "$KEY_FILE"  ]] || err "Arquivo de chave privada não encontrado: $KEY_FILE"
 
-[[ -d "$PROJECT_PATH" ]] || err "Diretório do projeto não encontrado: $PROJECT_PATH"
+[[ -d "$PROJECT_PATH" ]]              || err "Diretório do projeto não encontrado: $PROJECT_PATH"
 [[ -f "$PROJECT_PATH/docker-compose.yml" ]] || err "docker-compose.yml não encontrado em: $PROJECT_PATH"
 
-# Verifica se o domínio aponta para este VPS
-VPS_IP=$(curl -s --max-time 5 ifconfig.me 2>/dev/null \
-         || curl -s --max-time 5 ipinfo.io/ip 2>/dev/null \
-         || echo "desconhecido")
-RESOLVED_IP=$(dig +short "$DOMAIN" | tail -1)
+command -v docker &>/dev/null || err "docker não está instalado."
 
-if [[ "$RESOLVED_IP" != "$VPS_IP" ]]; then
-    warn "DNS: $DOMAIN → $RESOLVED_IP | IP deste VPS: $VPS_IP"
-    warn "O DNS pode não ter propagado ainda. O Certbot pode falhar."
-    read -rp "Continuar mesmo assim? [s/N] " yn
-    [[ "${yn,,}" != "s" ]] && exit 1
-else
-    log "DNS ok: $DOMAIN → $RESOLVED_IP"
-fi
+# Valida se o arquivo é um certificado PEM válido
+openssl x509 -noout -in "$CERT_FILE" &>/dev/null \
+    || err "Arquivo de certificado inválido ou corrompido: $CERT_FILE"
 
-# ---------------------------------------------------------------------------
-# Passo 1 — Instalar Certbot
-# ---------------------------------------------------------------------------
-step "Passo 1/5 — Instalando Certbot"
-apt-get update -qq
-apt-get install -y certbot
-log "Certbot instalado: $(certbot --version 2>&1)"
+# Valida se a chave privada é válida
+openssl pkey -noout -in "$KEY_FILE" &>/dev/null \
+    || err "Arquivo de chave privada inválido ou corrompido: $KEY_FILE"
+
+# Valida se o certificado e a chave são um par
+CERT_PUB=$(openssl x509 -noout -pubkey -in "$CERT_FILE" | md5sum)
+KEY_PUB=$(openssl pkey -pubout -in "$KEY_FILE" | md5sum)
+[[ "$CERT_PUB" == "$KEY_PUB" ]] \
+    || err "Certificado e chave privada não correspondem ao mesmo par."
+
+EXPIRY=$(openssl x509 -noout -enddate -in "$CERT_FILE" | cut -d= -f2)
+log "Certificado válido até: $EXPIRY"
 
 # ---------------------------------------------------------------------------
-# Passo 2 — Criar diretório de certificados para o container
+# Passo 1 — Criar diretório de certificados
 # ---------------------------------------------------------------------------
-step "Passo 2/5 — Criando diretório de certificados ($CERTS_DIR)"
-mkdir -p "$CERTS_DIR"
-chown root:root "$CERTS_DIR"
+step "Passo 1/3 — Criando diretório de certificados ($CERTS_DIR)"
+sudo mkdir -p "$CERTS_DIR"
+sudo chown "${USER}:${USER}" "$CERTS_DIR"
 chmod 750 "$CERTS_DIR"
-log "Diretório criado com permissões 750"
+log "Diretório pronto"
 
 # ---------------------------------------------------------------------------
-# Passo 3 — Criar deploy hook
+# Passo 2 — Instalar certificados
 # ---------------------------------------------------------------------------
-step "Passo 3/5 — Criando deploy hook"
-mkdir -p "$(dirname "$HOOK_PATH")"
+step "Passo 2/3 — Instalando certificados"
+# Remove caso existam como diretório (criados pelo Docker antes dos certs existirem)
+[[ -d "$CERTS_DIR/fullchain.pem" ]] && sudo rm -rf "$CERTS_DIR/fullchain.pem"
+[[ -d "$CERTS_DIR/privkey.pem"   ]] && sudo rm -rf "$CERTS_DIR/privkey.pem"
 
-cat > "$HOOK_PATH" << HOOK
-#!/bin/bash
-set -e
-
-DOMAIN="${DOMAIN}"
-DEST="${CERTS_DIR}"
-
-cp /etc/letsencrypt/live/\$DOMAIN/fullchain.pem  "\$DEST/fullchain.pem"
-cp /etc/letsencrypt/live/\$DOMAIN/privkey.pem    "\$DEST/privkey.pem"
-
-chmod 644 "\$DEST/fullchain.pem"
-chmod 640 "\$DEST/privkey.pem"
-chown root:root "\$DEST/fullchain.pem" "\$DEST/privkey.pem"
-
-# Reinicia o container carregando os novos certificados
-cd "${PROJECT_PATH}"
-HOME_PAGE_IMAGE=\$(docker inspect --format='{{.Config.Image}}' home_page_nginx 2>/dev/null || echo "home-page:latest") \
-  docker compose up -d
-HOOK
-
-chmod +x "$HOOK_PATH"
-log "Deploy hook criado em $HOOK_PATH"
-
-# ---------------------------------------------------------------------------
-# Passo 4 — Parar container e obter certificado
-# ---------------------------------------------------------------------------
-step "Passo 4/5 — Obtendo certificado SSL"
-
-log "Parando container para liberar porta 80..."
-cd "$PROJECT_PATH"
-docker compose down 2>/dev/null || true
-
-# Monta os domínios para o certbot
-CERTBOT_DOMAINS="-d $DOMAIN"
-if [[ "$INCLUDE_WWW" == true ]]; then
-    CERTBOT_DOMAINS="$CERTBOT_DOMAINS -d www.$DOMAIN"
-fi
-
-certbot certonly \
-    --standalone \
-    --preferred-challenges http \
-    $CERTBOT_DOMAINS \
-    --email "$EMAIL" \
-    --agree-tos \
-    --no-eff-email
-
-log "Certificado obtido com sucesso"
-
-# ---------------------------------------------------------------------------
-# Passo 5 — Executar deploy hook para copiar certificados
-# ---------------------------------------------------------------------------
-step "Passo 5/5 — Copiando certificados e subindo container"
-bash "$HOOK_PATH"
-
-log "Certificados copiados para $CERTS_DIR"
+cp "$CERT_FILE" "$CERTS_DIR/fullchain.pem"
+cp "$KEY_FILE"  "$CERTS_DIR/privkey.pem"
+chmod 644 "$CERTS_DIR/fullchain.pem"
+chmod 640 "$CERTS_DIR/privkey.pem"
+log "Certificados instalados em $CERTS_DIR"
 ls -la "$CERTS_DIR/"
+
+# ---------------------------------------------------------------------------
+# Passo 3 — Reiniciar container
+# ---------------------------------------------------------------------------
+step "Passo 3/3 — Reiniciando container"
+cd "$PROJECT_PATH"
+
+if docker ps -a --format '{{.Names}}' | grep -q "^home_page_nginx$"; then
+    docker restart home_page_nginx
+    log "Container reiniciado"
+else
+    warn "Container home_page_nginx não encontrado."
+    warn "Faça o deploy pelo GitHub Actions e rode o script novamente para reiniciar com os certificados."
+fi
 
 # ---------------------------------------------------------------------------
 # Verificação final
@@ -175,31 +143,11 @@ docker ps --filter name=home_page_nginx --format "  ID: {{.ID}} | Status: {{.Sta
 log "Aguardando container inicializar..."
 sleep 3
 
-HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "http://$DOMAIN" 2>/dev/null || echo "erro")
-HTTPS_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "https://$DOMAIN" 2>/dev/null || echo "erro")
+docker logs home_page_nginx --tail 5 2>&1 | sed 's/^/  /'
 
-echo "  HTTP  → $HTTP_STATUS"
-echo "  HTTPS → $HTTPS_STATUS"
-
-CERT_EXPIRY=$(echo | openssl s_client -connect "$DOMAIN:443" 2>/dev/null \
-              | openssl x509 -noout -enddate 2>/dev/null \
-              | cut -d= -f2 || echo "não disponível")
-echo "  Validade do certificado: $CERT_EXPIRY"
-
-# ---------------------------------------------------------------------------
-# Próximos passos
-# ---------------------------------------------------------------------------
 echo ""
 echo -e "${BOLD}Setup concluído!${NC}"
 echo ""
-echo -e "${YELLOW}Atenção — os arquivos do projeto ainda precisam ser atualizados:${NC}"
-echo "  1. nginx.conf    → adicionar server HTTPS (porta 8443) + redirect HTTP→HTTPS"
-echo "  2. Dockerfile    → expor porta 8443"
-echo "  3. docker-compose.yml → adicionar porta 443:8443 e volumes de certificados"
-echo ""
-echo "  Consulte o SSL_SETUP.md (passos 5, 6 e 7) para os conteúdos exatos."
-echo "  Após commitar e fazer push, o GitHub Actions irá rebuildar e reimplantar."
-echo ""
-echo -e "${BOLD}Renovação automática:${NC}"
-echo "  systemctl status certbot.timer     # verificar timer"
-echo "  sudo certbot renew --dry-run       # simular renovação"
+echo -e "${YELLOW}Confirme no Cloudflare:${NC}"
+echo "  1. DNS → Records: nuvem laranja ativada em antaresprime.com e www"
+echo "  2. SSL/TLS → Overview: modo Full (Strict)"
