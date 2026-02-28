@@ -22,4 +22,4 @@ EXPOSE 8080
 EXPOSE 8443
 
 HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
-  CMD wget -qO /dev/null http://localhost:8080/ || exit 1
+  CMD wget -qO /dev/null --no-check-certificate https://localhost:8443/ || exit 1
