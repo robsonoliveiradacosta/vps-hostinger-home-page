@@ -115,10 +115,12 @@ O workflow `.github/workflows/deploy.yml` é disparado em cada push para `main` 
 1. Checkout do repositório
 2. Configura Docker Buildx
 3. Login no Docker Hub (via secrets)
-4. Build e push da imagem com duas tags:
-   - `robsondeveloper/home-page:latest`
-   - `robsondeveloper/home-page:<git-sha>`
-   - Cache via GitHub Actions Cache
+4. Build e push da imagem com uma única tag, `robsondeveloper/home-page:<git-sha>` (sem `latest`:
+   o que roda na VPS é sempre um commit identificável). Cache via GitHub Actions Cache.
+
+Runner fixado em `ubuntu-24.04` e actions fixadas pelo SHA do commit, com a versão em comentário.
+Para atualizar uma action: pegar a tag nova no GitHub, o SHA com
+`gh api repos/<dono>/<action>/commits/<tag> --jq .sha` e trocar os dois no `deploy.yml`.
 
 ### Job `deploy` (depende de `build`)
 
@@ -174,9 +176,10 @@ docker logs -f home_page_nginx
 # Reiniciar o container
 docker restart home_page_nginx
 
-# Parar e subir manualmente (necessário ter HOME_PAGE_IMAGE definida)
+# Subir manualmente a imagem do último commit da main (tag = SHA do commit)
 cd ~/home-page
-HOME_PAGE_IMAGE=robsondeveloper/home-page:latest docker compose up -d
+SHA=$(git ls-remote https://github.com/robsonoliveiradacosta/vps-hostinger-home-page refs/heads/main | cut -f1)
+HOME_PAGE_IMAGE=robsondeveloper/home-page:$SHA docker compose up -d
 
 # Verificar uso de recursos
 docker stats home_page_nginx --no-stream
