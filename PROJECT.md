@@ -119,7 +119,17 @@ O workflow `.github/workflows/deploy.yml` é disparado em cada push para `main` 
    o que roda na VPS é sempre um commit identificável). Cache via GitHub Actions Cache.
 
 Runner fixado em `ubuntu-24.04` e actions fixadas pelo SHA do commit, com a versão em comentário.
-Para atualizar uma action: pegar a tag nova no GitHub, o SHA com
+
+### Atualizações — Dependabot
+
+`.github/dependabot.yml` abre PR semanal quando sai versão nova:
+
+- **Actions do `deploy.yml`**: todas num PR só, já com o SHA e o comentário de versão trocados.
+- **Imagem base do nginx**: só patches da linha estável (`1.30.x`). Mudar de linha (1.30 → 1.32) é manual.
+
+Versões publicadas há menos de 7 dias esperam (cooldown) antes de virar PR. Merge do PR na `main` = deploy.
+
+Atualização manual de uma action: pegar a tag nova no GitHub, o SHA com
 `gh api repos/<dono>/<action>/commits/<tag> --jq .sha` e trocar os dois no `deploy.yml`.
 
 ### Job `deploy` (depende de `build`)
