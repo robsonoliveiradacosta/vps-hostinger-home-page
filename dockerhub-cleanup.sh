@@ -1,6 +1,6 @@
 #!/bin/bash
 # Deleta todas as tags do repositório no Docker Hub, mantendo as N mais recentes.
-# A tag 'latest' é sempre preservada independentemente do valor de -k.
+# Todas as tags contam igual: o CI publica só tags <git-sha>, sem 'latest'.
 #
 # Uso:
 #   ./dockerhub-cleanup.sh [opções]
@@ -86,7 +86,7 @@ TOKEN=$(curl -sf -X POST "$API/users/login" \
 log "Autenticado como $DOCKERHUB_USERNAME"
 
 # ---------------------------------------------------------------------------
-# Listar todas as tags (excluindo 'latest'), ordenadas da mais recente para a mais antiga
+# Listar todas as tags, ordenadas da mais recente para a mais antiga
 # ---------------------------------------------------------------------------
 step "Buscando tags do repositório $REPO"
 
@@ -98,14 +98,14 @@ TAGS_JSON=$(curl -sf \
 TOTAL=$(echo "$TAGS_JSON" | jq '.count')
 log "Total de tags encontradas: $TOTAL"
 
-# Todas as tags exceto 'latest', ordenadas da mais recente para a mais antiga
+# Todas as tags, ordenadas da mais recente para a mais antiga
 ALL_TAGS=$(echo "$TAGS_JSON" | jq -r \
-    '[.results[] | select(.name != "latest")]
+    '.results
      | sort_by(.last_updated) | reverse[]
      | "\(.name)\t\(.last_updated)"')
 
 if [[ -z "$ALL_TAGS" ]]; then
-    warn "Nenhuma tag elegível encontrada (apenas 'latest' ou repositório vazio)."
+    warn "Nenhuma tag encontrada (repositório vazio)."
     exit 0
 fi
 
@@ -121,8 +121,8 @@ TO_DELETE=$(echo "$ALL_TAGS" | tail -n +"$(( KEEP + 1 ))")
 step "Resumo"
 
 echo ""
-echo -e "  Tags elegíveis (excluindo 'latest'): ${BOLD}$ELIGIBLE_COUNT${NC}"
-echo -e "  Tags a manter (as $KEEP mais recentes + 'latest'):  ${GREEN}$(( $(echo "$KEEP_TAGS" | wc -l) + 1 ))${NC}"
+echo -e "  Tags encontradas:                     ${BOLD}$ELIGIBLE_COUNT${NC}"
+echo -e "  Tags a manter (as $KEEP mais recentes):  ${GREEN}$(echo "$KEEP_TAGS" | wc -l)${NC}"
 
 if [[ -z "$TO_DELETE" ]]; then
     warn "Nenhuma tag para deletar — o repositório tem $ELIGIBLE_COUNT tag(s) elegível(is), limite de manutenção é $KEEP."
@@ -137,7 +137,6 @@ echo -e "  Tags a deletar:                       ${RED}$DELETE_COUNT${NC}"
 # ---------------------------------------------------------------------------
 echo ""
 echo -e "${CYAN}${BOLD}  Mantendo:${NC}"
-printf "  ${GREEN}%-52s %s${NC}\n" "latest" "(sempre preservada)"
 while IFS=$'\t' read -r tag date; do
     printf "  ${GREEN}%-52s %s${NC}\n" "$tag" "$date"
 done <<< "$KEEP_TAGS"
