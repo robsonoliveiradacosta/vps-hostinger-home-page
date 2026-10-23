@@ -2,12 +2,14 @@ services:
   nginx:
     image: ${HOME_PAGE_IMAGE}
     container_name: home_page_nginx
-    ports:
-      - "80:8080"
-      - "443:8443"
-    volumes:
-      - /home/robson/home-page-certs/fullchain.pem:/etc/nginx/certs/fullchain.pem:ro
-      - /home/robson/home-page-certs/privkey.pem:/etc/nginx/certs/privkey.pem:ro
+    # Sem portas publicadas: o Traefik (rede "proxy") recebe 80/443 e encaminha.
+    networks:
+      - proxy
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.home-page.rule=Host(`antaresprime.com`) || Host(`www.antaresprime.com`)
+      - traefik.http.routers.home-page.entrypoints=websecure
+      - traefik.http.services.home-page.loadbalancer.server.port=8080
     restart: unless-stopped
     mem_limit: 128m
     memswap_limit: 128m
@@ -27,3 +29,7 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+networks:
+  proxy:
+    external: true
