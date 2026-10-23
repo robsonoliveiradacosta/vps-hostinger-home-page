@@ -1,6 +1,6 @@
 # vps-hostinger-home-page
 
-Página pessoal estática servida por Nginx dentro de um container Docker com HTTPS via Cloudflare Origin Certificate. O deploy é totalmente automatizado via GitHub Actions.
+Página pessoal estática servida por Nginx dentro de um container Docker, atrás do Traefik compartilhado da VPS (HTTPS com Cloudflare Origin Certificate). O deploy é totalmente automatizado via GitHub Actions.
 
 ---
 
@@ -12,7 +12,7 @@ Página pessoal estática servida por Nginx dentro de um container Docker com HT
 4. [Container Docker](#container-docker)
 5. [Configuração do Nginx](#configuração-do-nginx)
 6. [CI/CD — GitHub Actions](#cicd--github-actions)
-7. [Certificado SSL — Cloudflare Origin Certificate](#certificado-ssl--cloudflare-origin-certificate)
+7. [HTTPS e roteamento — Traefik](#https-e-roteamento--traefik)
 8. [Segredos necessários no GitHub](#segredos-necessários-no-github)
 9. [Comandos úteis no VPS](#comandos-úteis-no-vps)
 
@@ -21,14 +21,13 @@ Página pessoal estática servida por Nginx dentro de um container Docker com HT
 ## Visão geral
 
 ```
-Internet → Cloudflare (proxy) → VPS:443 → Container:8443 (HTTPS, Nginx termina TLS)
-                                 VPS:80  → Container:8080 (Nginx redireciona para HTTPS)
+Internet → Cloudflare (proxy) → VPS:443 → Traefik (termina TLS) → Container:8080 (Nginx, HTTP)
+                                 VPS:80  → Traefik → redirect 301 para HTTPS
 ```
 
-- **Domínio**: antaresprime.com
+- **Domínio**: antaresprime.com (e `www`)
 - **Imagem Docker Hub**: `robsondeveloper/home-page`
-- **Certificado**: Cloudflare Origin Certificate (15 anos de validade)
-- **Certs no VPS**: `/home/robson/home-page-certs/`
+- **TLS na origem**: Traefik da infra `vps-antaresprime` (repositório privado), compartilhado com os outros projetos da VPS
 
 ---
 
@@ -40,7 +39,7 @@ Internet → Cloudflare (proxy) → VPS:443 → Container:8443 (HTTPS, Nginx ter
 | Servidor web | Nginx 1.27 Alpine |
 | Container runtime | Docker Compose |
 | Proxy / CDN | Cloudflare |
-| SSL/TLS | Cloudflare Origin Certificate |
+| Reverse proxy / TLS | Traefik (infra `vps-antaresprime`) + Cloudflare Origin Certificate |
 | CI/CD | GitHub Actions |
 | Registry | Docker Hub (`robsondeveloper/home-page`) |
 | VPS | Hostinger |
@@ -55,10 +54,9 @@ Internet → Cloudflare (proxy) → VPS:443 → Container:8443 (HTTPS, Nginx ter
 │   └── workflows/
 │       └── deploy.yml       # Pipeline CI/CD
 ├── Dockerfile               # Imagem Nginx Alpine com usuário não-root
-├── docker-compose.yml       # Serviço nginx com volumes de certificado
-├── nginx.conf               # Configuração Nginx (HTTP→HTTPS redirect + HTTPS)
+├── docker-compose.yml       # Serviço nginx na rede proxy, com labels do Traefik
+├── nginx.conf               # Configuração Nginx (HTTP na 8080 + headers de segurança)
 ├── homepage.html            # Página HTML estática
-├── setup-ssl.sh             # Script para instalar os certificados no VPS
 ├── PROJECT.md               # Este documento
 └── PROJECT_SUMMARY.md       # Resumo do projeto
 ```
@@ -71,16 +69,15 @@ Internet → Cloudflare (proxy) → VPS:443 → Container:8443 (HTTPS, Nginx ter
 
 - Base: `nginx:1.27-alpine`
 - Usuário não-root: `appuser` (UID 1001 / GID 1001)
-- Portas expostas: `8080` (HTTP) e `8443` (HTTPS)
-- Healthcheck via `wget --no-check-certificate https://127.0.0.1:8443/`
+- Porta exposta: `8080` (HTTP)
+- Healthcheck via `wget http://127.0.0.1:8080/`: a cada 1s nos primeiros 30s (`--start-interval`), depois a cada 30s.
+  O Traefik só roteia o container quando ele está `healthy`, então isso reduz a queda de cada deploy para ~2s.
 
 ### docker-compose.yml
 
 - Imagem lida da variável de ambiente `HOME_PAGE_IMAGE`
-- Porta `80 → 8080` e `443 → 8443`
-- Volumes somente-leitura com os certificados:
-  - `/home/robson/home-page-certs/fullchain.pem → /etc/nginx/certs/fullchain.pem`
-  - `/home/robson/home-page-certs/privkey.pem → /etc/nginx/certs/privkey.pem`
+- Sem portas publicadas: o container entra na rede Docker externa `proxy`, onde o Traefik o alcança
+- Labels do Traefik: router `home-page` para `antaresprime.com` e `www.antaresprime.com`, porta `8080`
 - Limites de recursos: 128 MB RAM, 0.25 CPU
 - Sistema de arquivos somente-leitura (`read_only: true`)
 - tmpfs em `/tmp`, `/var/cache/nginx`, `/var/run`, `/var/log/nginx`
@@ -92,18 +89,10 @@ Internet → Cloudflare (proxy) → VPS:443 → Container:8443 (HTTPS, Nginx ter
 
 ## Configuração do Nginx
 
-### Bloco HTTP (porta 8080)
-
-Redireciona todo tráfego HTTP para HTTPS com código 301.
-
-### Bloco HTTPS (porta 8443)
+Um único servidor HTTP na porta `8080`. TLS e redirect HTTP→HTTPS ficam no Traefik; o Nginx serve o conteúdo e os headers de segurança.
 
 | Configuração | Valor |
 |---|---|
-| Protocolos | TLSv1.2, TLSv1.3 |
-| Session cache | `shared:SSL:10m` |
-| Session timeout | 1 dia |
-| Session tickets | desativado |
 | HSTS | `max-age=63072000; includeSubDomains; preload` |
 | X-Frame-Options | `SAMEORIGIN` |
 | X-Content-Type-Options | `nosniff` |
@@ -143,87 +132,20 @@ O workflow `.github/workflows/deploy.yml` é disparado em cada push para `main` 
 
 ---
 
-## Certificado SSL — Cloudflare Origin Certificate
+## HTTPS e roteamento — Traefik
 
-O certificado usado é um **Cloudflare Origin Certificate** — um certificado emitido pelo Cloudflare válido por até 15 anos, usado especificamente na conexão entre o servidor de borda do Cloudflare e o servidor de origem (VPS). O Cloudflare apresenta seu próprio certificado público aos visitantes.
+Este repositório não cuida de certificados. O Traefik da infra `vps-antaresprime` (repositório privado) ocupa as portas 80/443 da VPS, termina o TLS com o Cloudflare Origin Certificate (`antaresprime.com` + `*.antaresprime.com`) e encaminha para este container pelas labels do `docker-compose.yml`.
 
-### Pré-requisitos no Cloudflare
+Pré-requisitos (atendidos pela infra):
 
-1. O domínio deve estar adicionado no Cloudflare
-2. Os registros DNS devem estar com **proxy ativado** (nuvem laranja):
-   - `antaresprime.com` → IP do VPS
-   - `www.antaresprime.com` → IP do VPS
+- Rede Docker externa `proxy` na VPS. Sem ela, o `docker compose up` do deploy falha.
+- Traefik rodando na rede `proxy`.
+- Cloudflare: `antaresprime.com` e `www` com **proxy ativado** e SSL/TLS em **Full (Strict)**.
 
-### Passo 1 — Configurar o modo SSL no Cloudflare
-
-Acesse **SSL/TLS → Overview** e selecione o modo **Full (Strict)**.
-
-> Sem isso o Cloudflare não valida o certificado de origem e a conexão pode falhar ou ficar em loop de redirecionamento.
-
-### Passo 2 — Gerar o Origin Certificate
-
-1. Acesse **SSL/TLS → Origin Server**
-2. Clique em **Create Certificate**
-3. Mantenha as opções padrão (RSA, validade de 15 anos)
-4. Clique em **Create**
-5. Copie o conteúdo de **Origin Certificate** e salve como `antaresprime.com.pem`
-6. Copie o conteúdo de **Private Key** e salve como `antaresprime.com.key`
-
-> A chave privada é exibida apenas uma vez. Salve imediatamente.
-
-### Passo 3 — Enviar os arquivos para o VPS
+Verificar:
 
 ```bash
-scp antaresprime.com.pem robson@<IP_DO_VPS>:~/
-scp antaresprime.com.key robson@<IP_DO_VPS>:~/
-```
-
-### Passo 4 — Executar o script de instalação no VPS
-
-Conecte-se ao VPS via SSH e execute:
-
-```bash
-cd ~/home-page
-./setup-ssl.sh -c ~/antaresprime.com.pem -k ~/antaresprime.com.key
-```
-
-O script realiza automaticamente:
-
-| Passo | Ação |
-|---|---|
-| Validação | Verifica se o cert e a chave são PEM válidos e formam um par |
-| Validade | Exibe a data de expiração do certificado |
-| Diretório | Cria `/home/robson/home-page-certs/` com permissões corretas |
-| Instalação | Copia `fullchain.pem` e `privkey.pem` para o diretório |
-| Reinício | Reinicia o container `home_page_nginx` |
-| Verificação | Exibe status do container e últimas linhas de log |
-
-### Passo 5 — Verificar
-
-```bash
-# Status do container
-docker ps --filter name=home_page_nginx
-
-# Logs do Nginx
-docker logs home_page_nginx
-
-# Testar HTTPS localmente (sem validação de CA)
-curl -k -I https://localhost
-
-# Testar via domínio (Cloudflare deve apresentar certificado público válido)
 curl -I https://antaresprime.com
-```
-
-### Renovação
-
-O Cloudflare Origin Certificate tem validade de 15 anos. Não há renovação automática necessária. Caso precise renovar antes do vencimento, repita os passos 2 a 4.
-
-### Estrutura de arquivos de certificado no VPS
-
-```
-/home/robson/home-page-certs/
-├── fullchain.pem   # Cloudflare Origin Certificate (chmod 644)
-└── privkey.pem     # Chave privada (chmod 644)
 ```
 
 ---
@@ -259,7 +181,7 @@ HOME_PAGE_IMAGE=robsondeveloper/home-page:latest docker compose up -d
 # Verificar uso de recursos
 docker stats home_page_nginx --no-stream
 
-# Build e teste local da imagem
+# Build e teste local da imagem (sem Traefik: publica a 8080 só para o teste)
 docker build -t home-page:local .
-HOME_PAGE_IMAGE=home-page:local docker compose up -d
+docker run --rm -p 8080:8080 home-page:local   # http://localhost:8080
 ```

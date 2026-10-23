@@ -1,6 +1,6 @@
 # Resumo — vps-hostinger-home-page
 
-Página pessoal estática (HTML) servida por Nginx em Docker com HTTPS via Cloudflare Origin Certificate. Deploy automatizado via GitHub Actions.
+Página pessoal estática (HTML) servida por Nginx em Docker, atrás do Traefik compartilhado da VPS. Deploy automatizado via GitHub Actions.
 
 ---
 
@@ -10,7 +10,7 @@ Página pessoal estática (HTML) servida por Nginx em Docker com HTTPS via Cloud
 |---|---|
 | Conteúdo | `homepage.html` estático |
 | Servidor | Nginx 1.27 Alpine (não-root, read-only) |
-| SSL | Cloudflare Origin Certificate |
+| HTTPS | Traefik (infra `vps-antaresprime`) + Cloudflare Origin Certificate |
 | CI/CD | GitHub Actions → Docker Hub → VPS via SSH |
 | VPS | Hostinger |
 
@@ -23,8 +23,8 @@ push main → GitHub Actions → build imagem → push Docker Hub → deploy VPS
 ```
 
 ```
-Internet → Cloudflare → VPS:443 → Container:8443
-                         VPS:80  → redirect 301 HTTPS
+Internet → Cloudflare → VPS:443 → Traefik (TLS) → Container:8080
+                         VPS:80  → Traefik → redirect 301 HTTPS
 ```
 
 ---
@@ -34,42 +34,16 @@ Internet → Cloudflare → VPS:443 → Container:8443
 | Arquivo | Função |
 |---|---|
 | `Dockerfile` | Nginx Alpine com usuário não-root (UID 1001) |
-| `nginx.conf` | HTTP→HTTPS redirect + TLS + headers de segurança |
-| `docker-compose.yml` | Serviço nginx com volumes de certificado |
+| `nginx.conf` | HTTP na 8080 + headers de segurança (TLS fica no Traefik) |
+| `docker-compose.yml` | Serviço nginx na rede `proxy`, com labels do Traefik |
 | `.github/workflows/deploy.yml` | Pipeline de build e deploy |
-| `setup-ssl.sh` | Script para instalar certificados no VPS |
 
 ---
 
-## Habilitar certificado SSL no VPS
+## HTTPS
 
-### 1. Cloudflare — configurar proxy e modo SSL
-
-- **DNS → Records**: ativar nuvem laranja (proxy) em `antaresprime.com` e `www`
-- **SSL/TLS → Overview**: selecionar modo **Full (Strict)**
-
-### 2. Cloudflare — gerar Origin Certificate
-
-- **SSL/TLS → Origin Server → Create Certificate**
-- Salvar os arquivos gerados:
-  - `antaresprime.com.pem` (certificado)
-  - `antaresprime.com.key` (chave privada — exibida apenas uma vez)
-
-### 3. Enviar arquivos para o VPS
-
-```bash
-scp antaresprime.com.pem robson@<IP_VPS>:~/
-scp antaresprime.com.key robson@<IP_VPS>:~/
-```
-
-### 4. Instalar no VPS
-
-```bash
-cd ~/home-page
-./setup-ssl.sh -c ~/antaresprime.com.pem -k ~/antaresprime.com.key
-```
-
-O script valida o par cert/chave, copia para `/home/robson/home-page-certs/` e reinicia o container.
+Certificados e portas 80/443 são responsabilidade do Traefik da infra `vps-antaresprime` (repositório privado).
+Este container só precisa da rede Docker externa `proxy` na VPS; sem ela, o deploy falha.
 
 ---
 
