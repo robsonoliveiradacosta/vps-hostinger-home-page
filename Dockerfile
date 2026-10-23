@@ -20,5 +20,7 @@ USER appuser
 
 EXPOSE 8080
 
-HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
+# O Traefik so roteia o container depois de "healthy": no start period o teste
+# roda a cada 1s, entao o site volta ~1s apos o deploy (e nao apos o 1o interval).
+HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --start-interval=1s --retries=3 \
   CMD wget -qO /dev/null http://127.0.0.1:8080/ || exit 1
