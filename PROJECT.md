@@ -36,7 +36,7 @@ Internet → Cloudflare (proxy) → VPS:443 → Traefik (termina TLS) → Contai
 | Componente | Tecnologia |
 |---|---|
 | Conteúdo | HTML estático (`homepage.html`) |
-| Servidor web | Nginx 1.27 Alpine |
+| Servidor web | Nginx 1.30.6 Alpine 3.24 |
 | Container runtime | Docker Compose |
 | Proxy / CDN | Cloudflare |
 | Reverse proxy / TLS | Traefik (infra `vps-antaresprime`) + Cloudflare Origin Certificate |
@@ -67,7 +67,7 @@ Internet → Cloudflare (proxy) → VPS:443 → Traefik (termina TLS) → Contai
 
 ### Dockerfile
 
-- Base: `nginx:1.27-alpine`
+- Base: `nginx:1.30.6-alpine3.24` (versão exata, sem tag móvel)
 - Usuário não-root: `appuser` (UID 1001 / GID 1001)
 - Porta exposta: `8080` (HTTP)
 - Healthcheck via `wget http://127.0.0.1:8080/`: a cada 1s nos primeiros 30s (`--start-interval`), depois a cada 30s.

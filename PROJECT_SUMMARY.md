@@ -9,7 +9,7 @@ Página pessoal estática (HTML) servida por Nginx em Docker, atrás do Traefik 
 | | |
 |---|---|
 | Conteúdo | `homepage.html` estático |
-| Servidor | Nginx 1.27 Alpine (não-root, read-only) |
+| Servidor | Nginx 1.30.6 Alpine 3.24 (não-root, read-only) |
 | HTTPS | Traefik (infra `vps-antaresprime`) + Cloudflare Origin Certificate |
 | CI/CD | GitHub Actions → Docker Hub → VPS via SSH |
 | VPS | Hostinger |
