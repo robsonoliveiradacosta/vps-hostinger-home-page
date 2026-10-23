@@ -1,6 +1,6 @@
 # vps-hostinger-home-page
 
-Página pessoal estática servida por Nginx dentro de um container Docker, atrás do Traefik compartilhado da VPS (HTTPS com Cloudflare Origin Certificate). O deploy é totalmente automatizado via GitHub Actions.
+Página pessoal estática servida por Nginx dentro de um container Docker, atrás do Traefik compartilhado da VPS (HTTPS com Cloudflare Origin Certificate). O deploy é totalmente automatizado via GitHub Actions, sem acesso SSH do CI à VPS.
 
 ---
 
@@ -54,12 +54,14 @@ Internet → Cloudflare (proxy) → VPS:443 → Traefik (termina TLS) → Contai
 │   └── workflows/
 │       └── deploy.yml       # Pipeline CI/CD
 ├── Dockerfile               # Imagem Nginx Alpine com usuário não-root
-├── docker-compose.yml       # Serviço nginx na rede proxy, com labels do Traefik
 ├── nginx.conf               # Configuração Nginx (HTTP na 8080 + headers de segurança)
 ├── homepage.html            # Página HTML estática
 ├── PROJECT.md               # Este documento
 └── PROJECT_SUMMARY.md       # Resumo do projeto
 ```
+
+O `compose.yaml` que roda na VPS fica no repo da infra, em `stacks/home-page/` (junto do
+`home-page.deploy.conf`, que o deploy automático lê).
 
 ---
 
@@ -73,9 +75,9 @@ Internet → Cloudflare (proxy) → VPS:443 → Traefik (termina TLS) → Contai
 - Healthcheck via `wget http://127.0.0.1:8080/`: a cada 1s nos primeiros 30s (`--start-interval`), depois a cada 30s.
   O Traefik só roteia o container quando ele está `healthy`, então isso reduz a queda de cada deploy para ~2s.
 
-### docker-compose.yml
+### compose.yaml (repo da infra, `stacks/home-page/`)
 
-- Imagem lida da variável de ambiente `HOME_PAGE_IMAGE`
+- Imagem lida da variável `HOME_PAGE_IMAGE`, que o deploy grava em `/srv/apps/home-page/images.env` na VPS
 - Sem portas publicadas: o container entra na rede Docker externa `proxy`, onde o Traefik o alcança
 - Labels do Traefik: router `home-page` para `antaresprime.com` e `www.antaresprime.com`, porta `8080`
 - Limites de recursos: 128 MB RAM, 0.25 CPU
@@ -108,7 +110,8 @@ Um único servidor HTTP na porta `8080`. TLS e redirect HTTP→HTTPS ficam no Tr
 
 ## CI/CD — GitHub Actions
 
-O workflow `.github/workflows/deploy.yml` é disparado em cada push para `main` (com proteção de concorrência — cancela runs anteriores em andamento).
+O workflow `.github/workflows/deploy.yml` é disparado em cada push para `main`. Os deploys entram em fila:
+um push novo espera o deploy em andamento terminar, nunca o cancela no meio.
 
 ### Job `build`
 
@@ -117,6 +120,7 @@ O workflow `.github/workflows/deploy.yml` é disparado em cada push para `main` 
 3. Login no Docker Hub (via secrets)
 4. Build e push da imagem com uma única tag, `robsondeveloper/home-page:<git-sha>` (sem `latest`:
    o que roda na VPS é sempre um commit identificável). Cache via GitHub Actions Cache.
+5. Expõe o digest da imagem publicada, que o job `deploy` compara com o que a VPS subiu.
 
 Runner fixado em `ubuntu-24.04` e actions fixadas pelo SHA do commit, com a versão em comentário.
 
@@ -134,19 +138,24 @@ Atualização manual de uma action: pegar a tag nova no GitHub, o SHA com
 
 ### Job `deploy` (depende de `build`)
 
-1. Checkout do repositório
-2. Cria o diretório `~/home-page` no VPS via SSH
-3. Copia o `docker-compose.yml` para o VPS via SCP
-4. No VPS via SSH:
-   - `docker compose pull` da imagem com a tag do commit
-   - `docker compose up -d --remove-orphans`
-   - `docker image prune -f`
+O CI não tem acesso à VPS. Ele pede o deploy ao `deploy-receiver` da infra e acompanha o resultado
+(detalhes no README do repo `vps-antaresprime`, seção "Deploy automático"):
+
+1. `POST https://deploy.antaresprime.com/deploy/home-page` com `{"app","sha"}`, assinado com HMAC-SHA256
+   (`DEPLOY_WEBHOOK_SECRET`) e, com o Cloudflare Access ativo, com o service token (`CF_ACCESS_*`).
+2. Na VPS, o worker confere que o SHA é o topo da `main`, sobe `robsondeveloper/home-page:<sha>` e espera o
+   healthcheck. Se a versão nova não ficar `healthy`, volta para a anterior.
+3. O job consulta `GET /status/home-page` até o resultado (até 5 min):
+   - `deployed`: confere se o digest que subiu é o mesmo que o build publicou;
+   - `failed`: falha com o motivo;
+   - `superseded` (ou a `main` andou): termina sem erro, o deploy do commit mais novo assume.
+4. Smoke test: `https://antaresprime.com/` responde 200.
 
 ---
 
 ## HTTPS e roteamento — Traefik
 
-Este repositório não cuida de certificados. O Traefik da infra `vps-antaresprime` (repositório privado) ocupa as portas 80/443 da VPS, termina o TLS com o Cloudflare Origin Certificate (`antaresprime.com` + `*.antaresprime.com`) e encaminha para este container pelas labels do `docker-compose.yml`.
+Este repositório não cuida de certificados. O Traefik da infra `vps-antaresprime` (repositório privado) ocupa as portas 80/443 da VPS, termina o TLS com o Cloudflare Origin Certificate (`antaresprime.com` + `*.antaresprime.com`) e encaminha para este container pelas labels do compose (`stacks/home-page/compose.yaml` na infra).
 
 Pré-requisitos (atendidos pela infra):
 
@@ -168,9 +177,9 @@ curl -I https://antaresprime.com
 |---|---|
 | `DOCKERHUB_USERNAME` | Usuário do Docker Hub |
 | `DOCKERHUB_TOKEN` | Access token do Docker Hub |
-| `VPS_HOST` | IP ou hostname do VPS |
-| `VPS_USER` | Usuário SSH no VPS (ex: `robson`) |
-| `VPS_SSH_KEY` | Chave SSH privada para acesso ao VPS |
+| `DEPLOY_WEBHOOK_SECRET` | Segredo HMAC do app `home-page`; o par fica na VPS em `/srv/deploy/secrets/home-page` |
+| `CF_ACCESS_CLIENT_ID` | Service token do Cloudflare Access de `deploy.antaresprime.com` (ID) |
+| `CF_ACCESS_CLIENT_SECRET` | Service token do Cloudflare Access de `deploy.antaresprime.com` (secret) |
 
 ---
 
@@ -186,10 +195,12 @@ docker logs -f home_page_nginx
 # Reiniciar o container
 docker restart home_page_nginx
 
-# Subir manualmente a imagem do último commit da main (tag = SHA do commit)
-cd ~/home-page
+# Refazer o deploy do último commit da main pelo mesmo caminho do CI (fila do worker)
 SHA=$(git ls-remote https://github.com/robsonoliveiradacosta/vps-hostinger-home-page refs/heads/main | cut -f1)
-HOME_PAGE_IMAGE=robsondeveloper/home-page:$SHA docker compose up -d
+# (grava em tmp/ e move: o worker nunca vê o arquivo pela metade)
+echo "$SHA" > /srv/deploy/spool/tmp/home-page && mv /srv/deploy/spool/tmp/home-page /srv/deploy/spool/queue/
+sudo journalctl -u deploy-worker -f   # acompanhar
+cat /srv/deploy/status/home-page.json # resultado
 
 # Verificar uso de recursos
 docker stats home_page_nginx --no-stream

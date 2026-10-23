@@ -5,9 +5,11 @@ on:
     branches:
       - main
 
+# Deploys em fila: um push novo espera o deploy em andamento terminar (nunca
+# cancela no meio). Se varios esperarem, o GitHub so mantem o mais recente.
 concurrency:
   group: deploy-main
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 # Actions fixadas pelo SHA do commit (uma tag pode ser movida para outro codigo);
 # o comentario indica a versao. Runner e imagem tambem sem "latest".
@@ -16,6 +18,8 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -30,6 +34,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -38,42 +43,73 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  # O CI nao entra na VPS. Ele pede o deploy ao deploy-receiver, que so aceita
+  # pedido assinado com o segredo deste app; o worker da VPS sobe a imagem e
+  # grava o resultado, que este job acompanha. Infra: repo vps-antaresprime,
+  # README, "Deploy automatico".
   deploy:
     runs-on: ubuntu-24.04
     needs: build
     permissions:
-      contents: read
+      contents: read # gh api: topo da main
+    env:
+      APP: home-page
+      DEPLOY_URL: https://deploy.antaresprime.com
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Prepare deploy directory on VPS
-        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          script: mkdir -p /home/${{ secrets.VPS_USER }}/home-page
-
-      - name: Copy docker-compose.yml to VPS
-        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          source: "docker-compose.yml"
-          target: /home/${{ secrets.VPS_USER }}/home-page
-
       - name: Deploy on VPS
-        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          script: |
-            set -e
-            cd /home/${{ secrets.VPS_USER }}/home-page
-            IMAGE=robsondeveloper/home-page:${{ github.sha }}
-            HOME_PAGE_IMAGE=$IMAGE docker compose pull
-            HOME_PAGE_IMAGE=$IMAGE docker compose up -d --remove-orphans
-            docker image prune -f
+        env:
+          DEPLOY_SECRET: ${{ secrets.DEPLOY_WEBHOOK_SECRET }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          DIGEST: ${{ needs.build.outputs.digest }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # Service token do Cloudflare Access na frente de deploy.antaresprime.com.
+          access=()
+          if [[ -n $CF_ACCESS_CLIENT_ID ]]; then
+            access=(-H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET")
+          fi
+
+          body=$(jq -nc --arg app "$APP" --arg sha "$GITHUB_SHA" '{app: $app, sha: $sha}')
+          sig=$(printf '%s' "$body" | openssl dgst -sha256 -hmac "$DEPLOY_SECRET" -r | cut -d' ' -f1)
+          curl -sS --fail-with-body --max-time 30 "${access[@]}" -X POST "$DEPLOY_URL/deploy/$APP" \
+            -H "X-Signature-256: sha256=$sig" -H 'Content-Type: application/json' --data "$body"
+
+          # O worker so aceita o SHA que for o topo da main: se chegou um push
+          # mais novo, o deploy dele assume e este termina sem erro.
+          deadline=$((SECONDS + 300))
+          while ((SECONDS < deadline)); do
+            sleep 5
+            st=$(curl -sS --fail --max-time 10 "${access[@]}" "$DEPLOY_URL/status/$APP" || echo '{}')
+            if [[ $(jq -r '.sha // ""' <<<"$st") == "$GITHUB_SHA" ]]; then
+              case $(jq -r .state <<<"$st") in
+                deployed)
+                  got=$(jq -r .digest <<<"$st")
+                  if [[ $got != "$DIGEST" ]]; then
+                    echo "::error::A VPS subiu $got, mas este build publicou $DIGEST (tag sobrescrita no registry?)"
+                    exit 1
+                  fi
+                  echo "No ar: $GITHUB_SHA ($got)"
+                  exit 0
+                  ;;
+                superseded)
+                  echo "::notice::Ha um commit mais novo na main; o deploy dele assume."
+                  exit 0
+                  ;;
+                failed)
+                  echo "::error::Deploy falhou na VPS: $(jq -r .detail <<<"$st")"
+                  exit 1
+                  ;;
+              esac
+            elif [[ $(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha) != "$GITHUB_SHA" ]]; then
+              echo "::notice::Ha um commit mais novo na main; o deploy dele assume."
+              exit 0
+            fi
+          done
+          echo "::error::Sem resultado da VPS em 5 min (na VPS: sudo journalctl -u deploy-worker)"
+          exit 1
+
+      - name: Smoke test
+        run: curl -sS --fail --max-time 15 -o /dev/null https://antaresprime.com/
