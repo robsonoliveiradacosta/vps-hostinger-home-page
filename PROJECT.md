@@ -54,6 +54,7 @@ Internet → Cloudflare (proxy) → VPS:443 → Traefik (termina TLS) → Contai
 │   └── workflows/
 │       └── deploy.yml       # Pipeline CI/CD
 ├── Dockerfile               # Imagem Nginx Alpine com usuário não-root
+├── dockerhub-cleanup.sh     # Apaga tags antigas no Docker Hub (manual)
 ├── nginx.conf               # Configuração Nginx (HTTP na 8080 + headers de segurança)
 ├── homepage.html            # Página HTML estática
 ├── PROJECT.md               # Este documento
@@ -135,6 +136,19 @@ Versões publicadas há menos de 7 dias esperam (cooldown) antes de virar PR. Me
 
 Atualização manual de uma action: pegar a tag nova no GitHub, o SHA com
 `gh api repos/<dono>/<action>/commits/<tag> --jq .sha` e trocar os dois no `deploy.yml`.
+
+### Limpeza de tags no Docker Hub — `dockerhub-cleanup.sh`
+
+Cada push publica uma tag nova (`<git-sha>`) e nada apaga as antigas. O script, rodado à mão, apaga
+as tags do repositório no Docker Hub mantendo as N mais recentes (por data de atualização):
+
+```bash
+DOCKERHUB_USERNAME=robsondeveloper DOCKERHUB_TOKEN=<token com permissão de delete> ./dockerhub-cleanup.sh -k 5
+```
+
+Mostra o que vai manter e apagar e pede confirmação (`-y` pula). Requer `curl` e `jq`.
+O deploy não depende das tags antigas: a VPS guarda localmente a imagem atual e a anterior (para o
+rollback), e uma VPS nova só precisa da tag do último commit da `main`.
 
 ### Job `deploy` (depende de `build`)
 
